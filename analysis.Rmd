@@ -1,0 +1,277 @@
+---
+title: "Heart Disease Analysis"
+author: "Yaohong Liang (yaohong2@illinois.edu)"
+date: "11/7/2020"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    theme: default
+    toc: yes
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+# load packages
+library(tidyverse)
+library(caret)
+library(rpart)
+library(rpart.plot)
+```
+
+```{r read-full-data, warning = FALSE, message = FALSE}
+# read full data
+hd = readr::read_csv("data/hd.csv")
+```
+
+***
+
+## Abstract
+
+> This analysis aims for developing a machine learning model for classifying heart disease using data collected through non-invasive procedure. Relevent features are selected for model fitting and data cleaning strategies including dealing with missing values are applied to the raw datasets. Decesion tree is the applied algorithm for model fitting, and cross-validation skills are involved. Eventually, a model having approximately 86% accuracy is found, which suggests that doctor who uses this model for diagnosis can be 86% confident about whether a patient has a heart disease or not.
+
+***
+
+## Introduction
+
+In the last century, people use invasive (involving injecting) and non-invasive procedure (e.g. blood pressures) to detect heart disease. To avoid using invasive method and reduce the cost of detecting heart disease, we need to develop models to classify heart disease in terms of metrics obtained from non-invasive procedure. In this analysis, we will use machine learning method to develop a model for classifying whether a patient has a heart disease or not. The `num` variable will be our outcome variable, and 0 represents healthy while others indicating heart disease.
+
+***
+
+## Methods
+
+### Data
+
+Our datasets come from *UCI Machine Learning Repository* created by *UCI Center for Machine Learning and Intelligent Systems* and there are 4 of them in the original document: *cleveland*, *Hungary*, *Switzerland*, and *the VA Long Beach*. Each row in our dataset represents the information of particular one patient. To fit for our analysis, we mainly focus on 14 variables presented in the dataset (the location variable is just the indicator of which dataset the observation comes from):
+
+1. `age`: age in years
+2. `sex`: sex (1 = male; 0 = female)
+3. `cp`: chest pain type
+  - *Value 1*: typical angina
+  - *Value 2*: atypical angina
+  - *Value 3*: non-anginal pain
+  - *Value 4*: asymptomatic
+4. `trestbps`: resting blood pressure (in mm Hg on admission to the hospital)
+5. `chol`: serum cholestoral in mg/dl
+6. `fbs`: (fasting blood sugar > 120 mg/dl) (1 = true; 0 = false)
+7. `restecg`: resting electrocardiographic results
+8. `thalach`: maximum heart rate achieved
+9. `exang`: exercise induced angina (1 = yes; 0 = no)
+10. `oldpeak`: ST depression induced by exercise relative to rest
+11. `slope`: the slope of the peak exercise ST segment
+12. `ca`: number of major vessels (0-3) colored by flourosopy
+13. `thal`: 3 = normal; 6 = fixed defect; 7 = reversable defect
+14. `num`: angiographic disease status
+  - *v0*: 0 major vessels with greater than 50% diameter narrowing. No presence of heart disease.
+  - *v1*: 1 major vessels with greater than 50% diameter narrowing.
+  - *v2*: 2 major vessels with greater than 50% diameter narrowing.
+  - *v3*: 3 major vessels with greater than 50% diameter narrowing.
+  - *v4*: 4 major vessels with greater than 50% diameter narrowing.
+15. `location`: source dataset
+
+To prepare a clean data set for modeling, we need to do some data cleaning. First of all, we convert `num` into a binary variable (0 for *v_0*, 1 for *v_1*, *v_2*, *v_3*, and *v_4*) because we only care about whether a patient has a heart disease or not, and a binary model would increase accuracy of our model. Then, we split our data into train dataset and test dataset.
+
+```{r}
+# convert num into binary
+idx1 <- hd$num == 'v0'
+idx2 <- ((hd$num == 'v1') | (hd$num == 'v2') | (hd$num == 'v3') | 
+  (hd$num == 'v4'))
+hd$num[idx1] <- 0
+hd$num[idx2] <- 1
+
+# split data
+set.seed(42)
+trn_idx <- createDataPartition(y = hd$num, p = 0.8, list = TRUE)
+hd_trn <- hd[trn_idx$Resample1, ]
+hd_tst <- hd[-trn_idx$Resample1, ]
+
+# na proportion detect
+na_prop <- function(x){
+  mean(is.na(x))
+}
+```
+
+Considering `ca` and `thal` are not helpful predicting `num`, and there are too many missing values in these 2 variables, we discard them. Then, by looking at the train data and test data, we find that there are many 0 values in `chol`, but that is impossible in reality, as people wouldn't have 0 serum cholestoral. Therefore, we regard them as missing values.
+
+```{r}
+# discard colums with more than 30% missing values 
+# (including `ca` and `thal`)
+hd_trn <- hd_trn[, !sapply(hd_trn, na_prop) > 0.3]
+```
+
+```{r, eval=TRUE}
+par(mfrow = c(1,2))
+boxplot(hd_trn$chol, ylab = "chol (mg/dl)", main = '`chol` in train data')
+boxplot(hd_tst$chol, ylab = "chol (mg/dl)", main = '`chol` in test data')
+```
+Looking at the boxplots of `chol` in both train data and test data. We found that they are all approximately normal, even though there are some exterme values. Considering they have normal distribution, we use the mean of other non-zero values in `chol` to replace them, and we do the same for both datasets. 
+
+```{r}
+# replacing missing value in `chol` for both train and test data
+hd_trn[which(hd_trn$chol == 0), "chol"] <- NA
+hd_trn[is.na(hd_trn$chol), "chol"] <- mean(hd_trn$chol[!is.na(hd_trn$chol)])
+
+hd_tst[which(hd_tst$chol == 0), "chol"] <- NA
+hd_tst[is.na(hd_tst$chol), "chol"] <- mean(hd_tst$chol[!is.na(hd_tst$chol)])
+```
+
+Even though the remain variables in train and test datasets have small amount of missing values, we adopt the same strategy (mean) to fill in those missing values for numeric variables. For categorical variables, we use the mode of them to fill out missing values.
+
+```{r}
+# mode function
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+# fill in categorical missing value (train data)
+hd_trn[is.na(hd_trn$fbs), "fbs"] <- getmode(hd_trn$fbs)
+hd_trn[is.na(hd_trn$restecg), "restecg"] <- getmode(hd_trn$restecg)
+hd_trn[is.na(hd_trn$exang), "exang"] <- getmode(hd_trn$exang)
+
+# fill in numeric missing values (test data)
+hd_trn[is.na(hd_trn$trestbps), "trestbps"] <- mean(hd_trn$trestbps[!is.na(hd_trn$trestbps)])
+hd_trn[is.na(hd_trn$thalach), "thalach"] <- mean(hd_trn$thalach[!is.na(hd_trn$thalach)])
+hd_trn[is.na(hd_trn$oldpeak), "oldpeak"] <- mean(hd_trn$oldpeak[!is.na(hd_trn$oldpeak)])
+
+
+
+# fill in categorical missing value (test data)
+hd_tst[is.na(hd_tst$fbs), "fbs"] <- getmode(hd_tst$fbs)
+hd_tst[is.na(hd_tst$restecg), "restecg"] <- getmode(hd_tst$restecg)
+hd_tst[is.na(hd_tst$exang), "exang"] <- getmode(hd_tst$exang)
+
+# fill in numeric missing values (test data)
+hd_tst[is.na(hd_tst$trestbps), "trestbps"] <- mean(hd_tst$trestbps[!is.na(hd_tst$trestbps)])
+hd_tst[is.na(hd_tst$thalach), "thalach"] <- mean(hd_tst$thalach[!is.na(hd_tst$thalach)])
+hd_tst[is.na(hd_tst$oldpeak), "oldpeak"] <- mean(hd_tst$oldpeak[!is.na(hd_tst$oldpeak)])
+```
+
+
+After that, we transform `sex`, `cp`, `fbs`, `restecg`, `location`, `exang` and `num` into the correct data type, factor.
+
+
+```{r}
+# coerce character variables to be factors
+hd_trn$sex <- factor(hd_trn$sex)
+hd_trn$cp <- factor(hd_trn$cp)
+hd_trn$fbs <- factor(hd_trn$fbs)
+hd_trn$restecg <- factor(hd_trn$restecg)
+hd_trn$location <- factor(hd_trn$location)
+hd_trn$exang <- factor(hd_trn$exang)
+hd_trn$num <- factor(hd_trn$num)
+
+hd_tst$sex <- factor(hd_tst$sex)
+hd_tst$cp <- factor(hd_tst$cp)
+hd_tst$fbs <- factor(hd_tst$fbs)
+hd_tst$restecg <- factor(hd_tst$restecg)
+hd_tst$location <- factor(hd_tst$location)
+hd_tst$exang <- factor(hd_tst$exang)
+hd_tst$num <- factor(hd_tst$num)
+```
+
+
+Finally, we are ready for modeling. we will use `num` as our response variable. For features, we may use `age`, `sex` and `cp` as they are trivial attributes for a patient. `trestbps`, `chol` and `fbs` are information that easy to get, therefore we will include them as well. `restecg` gives us better predictive power, so we include it as well. For `thalach`, `exang`, `oldpeak`, and `slope` they may also be helpful for our model prediction, therefore we would use them as well despite more works are needed to be done for collecting them. 
+
+
+### Modeling
+
+To fit a model for classification, we consider using decision tree algorithm. For simplification, I assume that minsplit for the model is 5. In order to find a relatively best model, we consider 4 `cp` values: *0.1*, *0.01*, *0.001* and *0.0001*. 10-folds cross-validated accuracy is calculated for each model using particular `cp` values. 
+
+We first operate our procedure within train dataset (split into estimation and validation) to see which `cp` gives us a model with highest cross-validated accuracy. Then, using this `cp` value to fit a best model on the whole train dataset. Finally, accuracy of this model will be assessed using test dataset.
+
+```{r}
+# fitting decision tree model with cross-validation
+index_fold = caret::createFolds(hd_trn$num, k = 10)
+
+
+calc_accy_tree_single_fold <- function(val_idx, cp){
+  est = hd_trn[-val_idx, ]
+  val = hd_trn[val_idx, ]
+  
+  mod = rpart(num ~ ., data = est, cp = cp, minsplit = 5)
+  prob = predict(mod, val)[, 2]
+  pred = factor(ifelse(prob > 0.5, 1, 0))
+  
+  mean(val$`num` == pred)
+}
+
+# cross_validation accuracy for chosen cp
+calc_cv_accy_for_cp <- function(cp){
+    accys <- sapply(index_fold, calc_accy_tree_single_fold, cp = cp)
+    mean(accys)
+}
+```
+
+
+***
+
+## Results
+
+```{r,echo=TRUE}
+# compare different cp values to find a relatively best cp
+cp_list <- c(0.1, 0.01, 0.001, 0.0001)
+best_cp <- cp_list[which.max(sapply(cp_list, calc_cv_accy_for_cp))]
+best_cp
+```
+
+It turns out that $cp = 0.01$ gives us a model with highest accuracy for predicting heart disease. Then, our final model would be a decision tree model: 
+
+$$num = \beta_0 + \beta_1age + \beta_2sex + \beta_3cp + \beta_4trestbps + \beta_5chol + \beta_6fbs + \beta_7restecg \\ + 
+\beta_8thalach + \beta_9exang + \beta_{10}oldpeak + \beta_{11}location$$
+
+with $cp = 0.01$ and $minsplit = 5$ (plot of decision tree is attached in the appendix).
+
+```{r}
+# final model
+model <- rpart(num ~ ., data = hd_trn, cp = best_cp, minsplit = 5)
+
+# prediction
+pred <- factor(ifelse(predict(model, hd_tst)[, 2] > 0.5, 1, 0))
+
+# confusion matrix
+confusion_m <- table(
+  actual = hd_tst$`num`,
+  predicted = pred
+)
+
+tp = confusion_m[2,2]
+tn = confusion_m[1,1]
+fp = confusion_m[1,2]
+fn = confusion_m[2,1]
+
+```
+
+```{r, echo=TRUE}
+# Accuracy
+(tp + tn)/(tp + tn + fp + fn)
+
+# False Positive Rate (Type I error, false alarm)
+fp/(fp + tn)
+
+# False Negative Rate (Type II error)
+fn/(fn + tp)
+```
+
+With this model we can see that we end up with a model having accuracy at around $86\%$ for predicting heart disease. However, it comes with $8.5\%$ false positive rate, and $18.8\%$ false negative rate.
+
+
+***
+
+## Discussion
+
+With the final model, researcher can be $86\%$ confident about the prediction result of heart disease. However, one needs to be cautious about the false positive rate which is $8.5\%$ here. It indicates that there are $8.5\%$ possibility that one may make a false claim on having a heart disease (Type I error). It also suggests that there are $18.8\%$ possibility that one would get a false result on not having any heart disease. 
+
+The model can only used for reference, more procedures may need to take into considerations for detecting heart disease. For better prediction model, future researchers may consider using other  fitting methods for optimizing the model. 
+
+***
+
+## Appendix
+
+```{r}
+rpart.plot(model)
+```
+
