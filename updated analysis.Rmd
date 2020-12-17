@@ -1,0 +1,302 @@
+---
+title: "Heart Disease Analysis"
+author: "Yaohong Liang (yaohong2@illinois.edu)"
+date: "12/4/2020"
+output:
+  html_document:
+    theme: default
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+# load packages
+library(tidyverse)
+library(caret)
+library(rpart)
+library(rpart.plot)
+```
+
+```{r read-full-data, warning = FALSE, message = FALSE}
+# read full data
+hd = readr::read_csv("data/hd.csv")
+```
+
+***
+
+## Abstract
+
+> This analysis aims for developing a machine learning model for classifying heart disease using data collected through non-invasive procedure. Relevent features are selected for model fitting and data cleaning strategies including dealing with missing values are applied to the raw datasets. 5 algorithms were applied for model fitting, and cross-validation was involved. Eventually, 2 models having approximately 84% accuracy were found, which suggests that doctor who uses either model for diagnosis can be 84% confident about whether a patient has a heart disease or not.
+
+***
+
+## Introduction
+
+In the last century, people use invasive (involving injecting) and non-invasive procedure (e.g. blood pressures) to detect heart disease. To avoid using invasive method and reduce the cost of detecting heart disease, we need to develop models to classify heart disease in terms of metrics obtained from non-invasive procedure. In this analysis, we will use machine learning method to develop a model for classifying whether a patient has a heart disease or not. The `num` variable will be our outcome variable, and 0 represents healthy while others indicating heart disease.
+
+***
+
+## Methods
+
+### Data
+
+Our datasets come from *UCI Machine Learning Repository* created by *UCI Center for Machine Learning and Intelligent Systems* and there are 4 of them in the original document: *cleveland*, *Hungary*, *Switzerland*, and *the VA Long Beach*. Each row in our dataset represents the information of particular one patient. To fit for our analysis, we mainly focus on 14 variables presented in the dataset (the location variable is just the indicator of which dataset the observation comes from):
+
+1. `age`: age in years
+2. `sex`: sex (1 = male; 0 = female)
+3. `cp`: chest pain type
+  - *Value 1*: typical angina
+  - *Value 2*: atypical angina
+  - *Value 3*: non-anginal pain
+  - *Value 4*: asymptomatic
+4. `trestbps`: resting blood pressure (in mm Hg on admission to the hospital)
+5. `chol`: serum cholestoral in mg/dl
+6. `fbs`: (fasting blood sugar > 120 mg/dl) (1 = true; 0 = false)
+7. `restecg`: resting electrocardiographic results
+8. `thalach`: maximum heart rate achieved
+9. `exang`: exercise induced angina (1 = yes; 0 = no)
+10. `oldpeak`: ST depression induced by exercise relative to rest
+11. `slope`: the slope of the peak exercise ST segment
+12. `ca`: number of major vessels (0-3) colored by flourosopy
+13. `thal`: 3 = normal; 6 = fixed defect; 7 = reversable defect
+14. `num`: angiographic disease status
+  - *v0*: 0 major vessels with greater than 50% diameter narrowing. No presence of heart disease.
+  - *v1*: 1 major vessels with greater than 50% diameter narrowing.
+  - *v2*: 2 major vessels with greater than 50% diameter narrowing.
+  - *v3*: 3 major vessels with greater than 50% diameter narrowing.
+  - *v4*: 4 major vessels with greater than 50% diameter narrowing.
+15. `location`: source dataset
+
+To prepare a clean data set for modeling, we need to do some data cleaning. First of all, we convert `num` into a binary variable (0 for *v_0*, 1 for *v_1*, *v_2*, *v_3*, and *v_4*) because we only care about whether a patient has a heart disease or not, and a binary model would increase accuracy of our model. Then, we split our data into train dataset and test dataset.
+
+```{r}
+# convert num into binary
+idx1 <- hd$num == 'v0'
+idx2 <- ((hd$num == 'v1') | (hd$num == 'v2') | (hd$num == 'v3') | 
+  (hd$num == 'v4'))
+hd$num[idx1] <- 0
+hd$num[idx2] <- 1
+
+# split data
+set.seed(42)
+trn_idx <- createDataPartition(y = hd$num, p = 0.8, list = TRUE)
+hd_trn <- hd[trn_idx$Resample1, ]
+hd_tst <- hd[-trn_idx$Resample1, ]
+
+# na proportion detect
+na_prop <- function(x){
+  mean(is.na(x))
+}
+```
+
+Considering `ca` and `thal` are not helpful predicting `num`, and there are too many missing values in these 2 variables, we discard them. Then, by looking at the train data and test data, we find that there are many 0 values in `chol`, but that is impossible in reality, as people wouldn't have 0 serum cholestoral. Therefore, we regard them as missing values.
+
+```{r}
+# discard colums with more than 30% missing values 
+# (including `ca` and `thal`)
+hd_trn <- hd_trn[, !sapply(hd_trn, na_prop) > 0.3]
+```
+
+```{r, eval=TRUE}
+par(mfrow = c(1,2))
+boxplot(hd_trn$chol, ylab = "chol (mg/dl)", main = '`chol` in train data')
+boxplot(hd_tst$chol, ylab = "chol (mg/dl)", main = '`chol` in test data')
+```
+Looking at the boxplots of `chol` in both train data and test data. We found that they are all approximately normal, even though there are some exterme values. Considering they have normal distribution, we use the mean of other non-zero values in `chol` to replace them, and we do the same for both datasets. 
+
+```{r}
+# replacing missing value in `chol` for both train and test data
+hd_trn[which(hd_trn$chol == 0), "chol"] <- NA
+hd_trn[is.na(hd_trn$chol), "chol"] <- mean(hd_trn$chol[!is.na(hd_trn$chol)])
+
+hd_tst[which(hd_tst$chol == 0), "chol"] <- NA
+hd_tst[is.na(hd_tst$chol), "chol"] <- mean(hd_tst$chol[!is.na(hd_tst$chol)])
+```
+
+Even though the remain variables in train and test datasets have small amount of missing values, we adopt the same strategy (mean) to fill in those missing values for numeric variables. For categorical variables, we use the mode of them to fill out missing values.
+
+```{r}
+# mode function
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+# fill in categorical missing value (train data)
+hd_trn[is.na(hd_trn$fbs), "fbs"] <- getmode(hd_trn$fbs)
+hd_trn[is.na(hd_trn$restecg), "restecg"] <- getmode(hd_trn$restecg)
+hd_trn[is.na(hd_trn$exang), "exang"] <- getmode(hd_trn$exang)
+
+# fill in numeric missing values (test data)
+hd_trn[is.na(hd_trn$trestbps), "trestbps"] <- mean(hd_trn$trestbps[!is.na(hd_trn$trestbps)])
+hd_trn[is.na(hd_trn$thalach), "thalach"] <- mean(hd_trn$thalach[!is.na(hd_trn$thalach)])
+hd_trn[is.na(hd_trn$oldpeak), "oldpeak"] <- mean(hd_trn$oldpeak[!is.na(hd_trn$oldpeak)])
+
+
+
+# fill in categorical missing value (test data)
+hd_tst[is.na(hd_tst$fbs), "fbs"] <- getmode(hd_tst$fbs)
+hd_tst[is.na(hd_tst$restecg), "restecg"] <- getmode(hd_tst$restecg)
+hd_tst[is.na(hd_tst$exang), "exang"] <- getmode(hd_tst$exang)
+
+# fill in numeric missing values (test data)
+hd_tst[is.na(hd_tst$trestbps), "trestbps"] <- mean(hd_tst$trestbps[!is.na(hd_tst$trestbps)])
+hd_tst[is.na(hd_tst$thalach), "thalach"] <- mean(hd_tst$thalach[!is.na(hd_tst$thalach)])
+hd_tst[is.na(hd_tst$oldpeak), "oldpeak"] <- mean(hd_tst$oldpeak[!is.na(hd_tst$oldpeak)])
+```
+
+
+After that, we transform `sex`, `cp`, `fbs`, `restecg`, `location`, `exang` and `num` into the correct data type, factor.
+
+
+```{r}
+# coerce character variables to be factors
+hd_trn$sex <- factor(hd_trn$sex)
+hd_trn$cp <- factor(hd_trn$cp)
+hd_trn$fbs <- factor(hd_trn$fbs)
+hd_trn$restecg <- factor(hd_trn$restecg)
+hd_trn$location <- factor(hd_trn$location)
+hd_trn$exang <- factor(hd_trn$exang)
+hd_trn$num <- factor(hd_trn$num)
+
+hd_tst$sex <- factor(hd_tst$sex)
+hd_tst$cp <- factor(hd_tst$cp)
+hd_tst$fbs <- factor(hd_tst$fbs)
+hd_tst$restecg <- factor(hd_tst$restecg)
+hd_tst$location <- factor(hd_tst$location)
+hd_tst$exang <- factor(hd_tst$exang)
+hd_tst$num <- factor(hd_tst$num)
+```
+
+
+Finally, we are ready for modeling. we will use `num` as our response variable. For features, we may use `age`, `sex` and `cp` as they are trivial attributes for a patient. `trestbps`, `chol` and `fbs` are information that easy to get, therefore we will include them as well. `restecg` gives us better predictive power, so we include it as well. For `thalach`, `exang`, `oldpeak`, and `slope` they may also be helpful for our model prediction, therefore we would use them as well despite more works are needed to be done for collecting them. 
+
+
+### Modeling
+
+To select an optimal model for classification, we consider 5 methods to build the model, including logistic regression, decision tree, knn, random forest, and gradient boosting machine. We applied 5-fold cross-validation as tuning strategy.
+
+```{r}
+set.seed(42)
+cv_5 <- trainControl(method = "cv", number = 5)
+
+glm_mod <- train(form = num ~ .,
+                  data = hd_trn, 
+                  method = "glm", 
+                  trControl = cv_5, 
+                  tuneLength = 10)
+
+tree_mod <- train(form = num ~ .,
+                  data = hd_trn, 
+                  method = "rpart", 
+                  trControl = cv_5, 
+                  tuneLength = 10)
+
+knn_mod <- train(form = num ~ .,
+                  data = hd_trn, 
+                  method = "knn", 
+                  trControl = cv_5, 
+                  tuneLength = 10)
+
+rf_mod <- train(form = num ~ ., 
+                data = hd_trn, 
+                method = 'rf',
+                trControl = cv_5, 
+                verbose = FALSE,
+                tuneLength = 10)
+
+gbm_mod <- train(form = num ~ ., 
+                data = hd_trn, 
+                method = 'gbm',
+                trControl = cv_5, 
+                verbose = FALSE,
+                tuneLength = 10)
+```
+
+
+***
+
+## Results
+
+```{r, eval=FALSE}
+# confusion matrices
+m_glm <- table(predicted = predict(glm_mod, hd_tst, type = "raw"), 
+              actual = hd_tst$num)
+m_tree <- table(predicted = predict(tree_mod, hd_tst, type = "raw"),
+              actual = hd_tst$num)
+m_knn <- table(predicted = predict(knn_mod, hd_tst, type = "raw"),
+              actual = hd_tst$num)
+m_rf <- table(predicted = predict(rf_mod, hd_tst, type = "raw"),
+              actual = hd_tst$num)
+m_gbm <- table(predicted = predict(gbm_mod, hd_tst, type = "raw"),
+              actual = hd_tst$num)
+
+# false positive rate (Type I error, false alarm)
+fpr <- function(m){
+  tp = m[2,2]
+  tn = m[1,1]
+  fp = m[1,2]
+  fn = m[2,1]
+  fp/(fp + tn)
+}
+
+# False Negative Rate (Type II error)
+fnr <- function(m){
+  tp = m[2,2]
+  tn = m[1,1]
+  fp = m[1,2]
+  fn = m[2,1]
+  fn/(fn + tp)
+}
+
+# false positive rate
+fpr(m_glm) # 0.1807229
+fpr(m_tree) # 0.3168317
+fpr(m_knn) # 0.3150685
+fpr(m_rf) # 0.1807229
+fpr(m_gbm) # 0.1829268
+
+# false negative rate
+fnr(m_glm) # 0.14
+fnr(m_tree) # 0.1585366
+fnr(m_knn) # 0.2909091
+fnr(m_rf) # 0.14
+fnr(m_gbm) # 0.1485149
+```
+
+It turns out that the model fitted with logistic regression and the one fitted with random forest achieved the lowest false positive rate, $18\%$, and false negative rate, $14\%$. Suprisingly, random forest and logistic regression models also have the same accuracy, $84\%$.
+
+```{r, eval=FALSE}
+mean(hd_tst$num == predict(glm_mod, hd_tst, type = "raw"))
+mean(hd_tst$num == predict(rf_mod, hd_tst, type = "raw"))
+```
+
+
+***
+
+## Discussion
+
+Using models obtained from either random forest and logistic regression, researcher can be $84\%$ confident about the prediction result of heart disease. However, one needs to be cautious about the false positive rate which is $18\%$ here. It indicates that there are $18\%$ possibility that one may make a false claim on having a heart disease (Type I error). It also suggests that there are $14\%$ possibility that one would get a false result on not having any heart disease. 
+
+The model can only be used for reference, more procedures may need to take into considerations for detecting heart disease. For better prediction model, future researchers may consider more advanced technique to reduce the false positive rate and false negative rate.
+
+***
+
+## Appendix
+
+***
+
+## Changelog
+
+In the original analysis, I have already tackled the missing value and converted the response variable into binary variable. However, I only used decision tree to train the model and I used a self-made function to do cross-validation.
+
+Changes made to this analysis:
+
+1. I tried to apply different methods to fit models following ML pipeline of `caret` library. Here, I used 5 mehtods in total, including logistic regression, knn, decision tree, random forest, and gradient boosting machine.
+
+2. Instead of using accuracy as model selecting metrics, I usd false positive rate and false negative rate to select the optimal model.
