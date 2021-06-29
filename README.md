@@ -50,3 +50,12 @@ In other words, the response variable `num` is the **number** of major heart ves
 When considering how to use the remaining variables as features, consider how easy these values are to collect. Because STAT 432 is not a medical course, we do not expect you to know with 100% certainty how these variables are measured, but do make clear what your assumptions are about these variables, especially with respect to how they are measured. Are these variables easy to measure, or do they require an invasive procedure?
 
 Be aware of when and where this data was collected.
+
+## Project OUTCOME
+
+Built a tree-based model for heart disease detection with **86%** accuracy.
+
+Listed below is a graph demostrate how the decision tree works when fitting the model.
+
+<img width="568" alt="graph" src="https://user-images.githubusercontent.com/70075254/123871934-f7c0dc00-d8f9-11eb-93c6-baf2338fdc95.png">
+
