@@ -53,7 +53,7 @@ Be aware of when and where this data was collected.
 
 ## Project OUTCOME
 
-Built a tree-based model for heart disease detection with **86%** accuracy.
+Built tree-based models for heart disease detection with **84%** accuracy.
 
 Listed below is a graph demostrate how the decision tree works when fitting the model.
 
